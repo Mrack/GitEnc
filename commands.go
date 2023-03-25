@@ -115,9 +115,12 @@ func Lock(key KeyCommand) {
 	//}
 }
 func Unlock(command KeyCommand) {
-	_, keyName, key := getKey(command)
+	keyPath, keyName, key := getKey(command)
+	if _, err := os.Stat(keyPath); err == nil {
+		log.Error("gitenc isnot initialized in this repository. Run 'gitenc init' to initialize it.")
+		return
+	}
 	SetGitConfig(keyName)
-
 	for _, file := range getEncryptFiles() {
 		data, err := os.ReadFile(file)
 		if err != nil {
@@ -146,7 +149,11 @@ func Unlock(command KeyCommand) {
 
 func Doctor(cmd DoctorCommand) {
 	// git ls-files -cotsz --exclude-standard ...
-	_, output := RunCommand("git", "ls-files", "-cotsz", "--exclude-standard", getRepoRoot())
+	code, output := RunCommand("git", "ls-files", "-cotsz", "--exclude-standard", getRepoRoot())
+	if code == 1 {
+		log.Error(output)
+		return
+	}
 	fileList := bytes.Split([]byte(output), []byte("\000"))
 	encrypted := make([]string, 0)
 	unencrypted := make([]string, 0)
@@ -159,7 +166,11 @@ func Doctor(cmd DoctorCommand) {
 			continue
 		}
 		// git check-attr filter diff -- filename
-		_, output := RunCommand("git", "check-attr", "filter", "diff", "--", fields[4])
+		code, output := RunCommand("git", "check-attr", "filter", "diff", "--", fields[4])
+		if code == 1 {
+			log.Error(output)
+			return
+		}
 		attrs := strings.Fields(string(output))
 		filter, diff := attrs[2], attrs[5]
 
@@ -206,6 +217,12 @@ func Doctor(cmd DoctorCommand) {
 }
 
 func Init(command KeyCommand) {
+	//git rev-parse
+	code, res := RunCommand("git", "rev-parse")
+	if code == 1 {
+		log.Error(res)
+		return
+	}
 	keyPath, keyName, key := getKey(command)
 	if _, err := os.Stat(keyPath); err == nil {
 		log.Error("gitenc is already initialized")
@@ -372,6 +389,10 @@ func Clean(cmd KeyCommand) {
 
 func Set(cmd KeyCommand) {
 	keyPath, keyName := GetKeyPath(cmd.KeyName)
+	if _, err := os.Stat(keyPath); err == nil {
+		log.Error("gitenc isnot initialized in this repository. Run 'gitenc init' to initialize it.")
+		return
+	}
 	if cmd.Key != "" {
 		log.Info("Generating new key...")
 		key := GenerateKey(cmd.Key)

@@ -2,9 +2,10 @@ package gitenc
 
 import (
 	"log"
+	"runtime"
 )
 
-const (
+var (
 	ANSI_RED     = "\033[31m"
 	ANSI_YELLOW  = "\033[33m"
 	ANSI_BLUE    = "\033[34m"
@@ -28,6 +29,9 @@ func InitLog() {
 }
 
 func getLogLevelPrefix(logLevel LogLevel) string {
+	if runtime.GOOS == "windows" {
+		return "[" + logLevel.String() + "]"
+	}
 	switch logLevel {
 	case logLevelWarning:
 		return ANSI_YELLOW + "[WARNING]" + ANSI_RESET
