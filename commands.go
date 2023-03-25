@@ -38,6 +38,7 @@ type HEADER struct {
 
 func SetGitConfig(name string) {
 	ex, _ := os.Executable()
+	ex = "'" + ex + "'"
 	// git config filter.gitenc.smudge "gitenc smudge %f"
 	RunCommand("git", "config", "filter.gitenc.smudge", ex+" smudge -keyname "+name)
 	// git config filter.gitenc.clean "gitenc clean %f"
