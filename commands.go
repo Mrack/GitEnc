@@ -23,6 +23,7 @@ package main
 import (
 	"bytes"
 	"crypto/rand"
+	"fmt"
 	log "gitenc/log"
 	"io/ioutil"
 	"os"
@@ -106,17 +107,40 @@ func getRepoRoot() string {
 	}
 	return res
 }
-func Lock(key KeyCommand) {
-	log.Warning("gitenc lock is not implemented yet.")
-	//encryptFiles := getEncryptFiles()
-	//ClearGitConfig(key.KeyName)
-	//for _, file := range encryptFiles {
-	//	RunCommand("git", "checkout", "--", file)
-	//}
+
+func getUserInput() bool {
+	var input string
+	fmt.Print("refreshing is very dangerous, it will rewrite all the files in the repository, are you sure? (y/n):")
+	fmt.Scanln(&input)
+	if input == "y" {
+		return true
+	} else {
+		return false
+	}
 }
+
+func Lock(command KeyCommand) {
+	//log.Warning("gitenc lock is not implemented yet.")
+	keyPath, _, _ := getKey(command)
+	if _, err := os.Stat(keyPath); err != nil {
+		log.Error("gitenc isnot initialized in this repository. Run 'gitenc init' to initialize it.")
+		return
+	}
+	encryptFiles := getEncryptFiles()
+	ClearGitConfig(command.KeyName)
+	for _, file := range encryptFiles {
+		RunCommand("git", "checkout", "--", file)
+	}
+
+	if getUserInput() {
+		RunCommand("git", "rm", "-r", "--cached", "--", getRepoRoot())
+		RunCommand("git", "reset", "--hard")
+	}
+}
+
 func Unlock(command KeyCommand) {
 	keyPath, keyName, key := getKey(command)
-	if _, err := os.Stat(keyPath); err == nil {
+	if _, err := os.Stat(keyPath); err != nil {
 		log.Error("gitenc isnot initialized in this repository. Run 'gitenc init' to initialize it.")
 		return
 	}
@@ -143,6 +167,11 @@ func Unlock(command KeyCommand) {
 				continue
 			}
 		}
+	}
+
+	if getUserInput() {
+		RunCommand("git", "rm", "-r", "--cached", "--", getRepoRoot())
+		RunCommand("git", "reset", "--hard")
 	}
 
 }
@@ -275,7 +304,7 @@ func Smudge(cmd KeyCommand) {
 	header := (*HEADER)(unsafe.Pointer(&headerBytes[0]))
 	// Read encrypted data from stdin
 	if header.flag != [4]byte{0, 'M', 'R', 0} || header.version != 1 {
-		log.Warning("File is not encrypted")
+		log.Warning("File is not encrypted. please run 'gitenc doctor' to fix it.")
 		os.Stdout.Write(headerBytes)
 		return
 	}
@@ -284,7 +313,7 @@ func Smudge(cmd KeyCommand) {
 	keyPath, keyName := GetKeyPath(cmd.KeyName)
 	key, err := os.ReadFile(keyPath + keyName)
 	if err != nil {
-		log.Warning("File is not encrypted")
+		log.Warning("File is not encrypted. please run 'gitenc doctor' to fix it.")
 		os.Stdout.Write(headerBytes)
 		return
 	}
@@ -389,7 +418,7 @@ func Clean(cmd KeyCommand) {
 
 func Set(cmd KeyCommand) {
 	keyPath, keyName := GetKeyPath(cmd.KeyName)
-	if _, err := os.Stat(keyPath); err == nil {
+	if _, err := os.Stat(keyPath); err != nil {
 		log.Error("gitenc isnot initialized in this repository. Run 'gitenc init' to initialize it.")
 		return
 	}
