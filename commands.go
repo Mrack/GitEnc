@@ -21,10 +21,12 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
+	log "gitenc/log"
 	"io/ioutil"
-	"log"
 	"os"
+	"strings"
 	"unsafe"
 )
 
@@ -36,6 +38,29 @@ type HEADER struct {
 	size    uint64
 }
 
+func blobIsEncrypted(blob string) bool {
+	_, output := RunCommand("git", "cat-file", "blob", blob)
+	data := []byte(output)
+	if len(data) > int(unsafe.Sizeof(HEADER{})) {
+		header := (*HEADER)(unsafe.Pointer(&data[0]))
+		if header.flag == [4]byte{0, 'M', 'R', 0} && header.version == 1 {
+			return true
+		}
+	}
+	return false
+}
+func ClearGitConfig(name string) {
+	ex, _ := os.Executable()
+	ex = "'" + ex + "'"
+	// git config --unset filter.gitenc.clean
+	RunCommand("git", "config", "--unset", "filter.gitenc.clean")
+	// git config --unset filter.gitenc.smudge
+	RunCommand("git", "config", "--unset", "filter.gitenc.smudge")
+	// git config --unset filter.gitenc.required
+	RunCommand("git", "config", "--unset", "filter.gitenc.required")
+	// git config --unset diff.gitenc.textconv
+	RunCommand("git", "config", "--unset", "diff.gitenc.textconv")
+}
 func SetGitConfig(name string) {
 	ex, _ := os.Executable()
 	ex = "'" + ex + "'"
@@ -48,36 +73,178 @@ func SetGitConfig(name string) {
 	// git config diff.gitenc.textconv "gitenc diff %f"
 	RunCommand("git", "config", "diff.gitenc.textconv", ex+" diff -keyname "+name)
 }
+func getEncryptFiles() []string {
+	//git ls-files -cz -- .
+	_, output := RunCommand("git", "ls-files", "-cz", "--", getRepoRoot())
+	fileList := bytes.Split([]byte(output), []byte("\000"))
+	encrypted := make([]string, 0)
+	for _, fileInfo := range fileList {
+		if len(fileInfo) == 0 {
+			continue
+		}
+		fields := strings.Fields(string(fileInfo))
+		if fields[0] == "?" {
+			continue
+		}
+		// git check-attr filter diff -- filename
+		_, output := RunCommand("git", "check-attr", "filter", "diff", "--", fields[0])
+		attrs := strings.Fields(string(output))
+		filter, diff := attrs[2], attrs[5]
 
-func Checkout() {
-	// git checkout-index -f --all
-	RunCommand("git", "checkout")
+		if filter == "gitenc" && diff == "gitenc" {
+			encrypted = append(encrypted, fields[0])
+		}
+	}
+	return encrypted
+}
+
+func getRepoRoot() string {
+	_, res := RunCommand("git", "rev-parse", "--show-cdup")
+	res = Trim(res)
+	if res == "" {
+		return "."
+	}
+	return res
+}
+func Lock(key KeyCommand) {
+	log.Warning("gitenc lock is not implemented yet.")
+	//encryptFiles := getEncryptFiles()
+	//ClearGitConfig(key.KeyName)
+	//for _, file := range encryptFiles {
+	//	RunCommand("git", "checkout", "--", file)
+	//}
+}
+func Unlock(command KeyCommand) {
+	_, keyName, key := getKey(command)
+	SetGitConfig(keyName)
+
+	for _, file := range getEncryptFiles() {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			log.Error(err)
+			continue
+		}
+
+		if len(data) > int(unsafe.Sizeof(HEADER{})) {
+			header := (*HEADER)(unsafe.Pointer(&data[0]))
+			if header.flag == [4]byte{0, 'M', 'R', 0} && header.version == 1 {
+				if header.khash != Hash(key) {
+					log.Error("gitenc key is not the same as the one used to encrypt the file.")
+					break
+				}
+				log.Info("Decrypting file: " + file)
+				// git add -- filename
+				RunCommand("git", "add", "--", file)
+				// git checkout -- filename
+				RunCommand("git", "checkout", "--", file)
+				continue
+			}
+		}
+	}
+
+}
+
+func Doctor(cmd DoctorCommand) {
+	// git ls-files -cotsz --exclude-standard ...
+	_, output := RunCommand("git", "ls-files", "-cotsz", "--exclude-standard", getRepoRoot())
+	fileList := bytes.Split([]byte(output), []byte("\000"))
+	encrypted := make([]string, 0)
+	unencrypted := make([]string, 0)
+	for _, fileInfo := range fileList {
+		if len(fileInfo) == 0 {
+			continue
+		}
+		fields := strings.Fields(string(fileInfo))
+		if fields[0] == "?" {
+			continue
+		}
+		// git check-attr filter diff -- filename
+		_, output := RunCommand("git", "check-attr", "filter", "diff", "--", fields[4])
+		attrs := strings.Fields(string(output))
+		filter, diff := attrs[2], attrs[5]
+
+		if filter == "gitenc" && diff == "gitenc" {
+			encrypted = append(encrypted, fields[4])
+			// git cat-file blob object_id
+			if blobIsEncrypted(fields[2]) {
+				continue
+			}
+
+			if cmd.Fix {
+				// fix header
+				// git add -- filename
+				RunCommand("git", "add", "--", fields[4])
+				// git ls-files -sz filename
+				_, output = RunCommand("git", "ls-files", "-sz", fields[4])
+				fields = strings.Fields(output)
+				// git cat-file blob object_id
+				if blobIsEncrypted(fields[1]) {
+					log.Info("Fixed file:", fields[3])
+					continue
+				}
+				log.Error("Failed to fix file:", fields[3])
+			} else {
+				log.Warning("File is not encrypted:", fields[4], ". Run 'gitenc doctor --fix' to fix it or add it to .gitattributes if you want to ignore it")
+			}
+		} else {
+			unencrypted = append(unencrypted, fields[4])
+		}
+
+	}
+	if len(encrypted) > 0 {
+		log.Info("Encrypted files:")
+		for _, file := range encrypted {
+			log.Log(file)
+		}
+	}
+	if len(unencrypted) > 0 {
+		log.Info("Unencrypted files:")
+		for _, file := range unencrypted {
+			log.Log(file)
+		}
+	}
 }
 
 func Init(command KeyCommand) {
-	keyPath, keyName := GetKeyPath(command.KeyName)
+	keyPath, keyName, key := getKey(command)
 	if _, err := os.Stat(keyPath); err == nil {
-		log.Println("gitenc already initialized")
+		log.Error("gitenc is already initialized")
 		return
 	}
-	if command.Key == "" {
-		key := make([]byte, 32)
-		rand.Read(key)
-		command.Key = string(key)
-	}
-	key := GenerateKey(command.Key)
 	if err := os.MkdirAll(keyPath, 0700); err != nil {
-		log.Println("Error creating key directory", err)
+		log.Error("Error creating key directory", err)
 		return
 	}
 	if err := os.WriteFile(keyPath+keyName, key, 0600); err != nil {
-		log.Println("Error writing key", err)
+		log.Error("Error writing key", err)
 		return
 	}
-	SetGitConfig(keyName)
-
 	os.WriteFile(".gitattributes", []byte("* filter=gitenc diff=gitenc\n.gitattributes !filter !diff"), 0600)
-	log.Println("gitenc initialized")
+	log.Info("gitenc initialized")
+
+	command.KeyName = keyName
+	Unlock(command)
+}
+
+func getKey(command KeyCommand) (string, string, []byte) {
+	keyPath, keyName := GetKeyPath(command.KeyName)
+	var key []byte
+	if _, err := os.Stat(keyPath + keyName); err != nil {
+		if command.Key == "" {
+			key := make([]byte, 32)
+			rand.Read(key)
+			command.Key = string(key)
+		}
+		key = GenerateKey(command.Key)
+	} else {
+		key, err = os.ReadFile(keyPath + keyName)
+		if err != nil {
+			log.Error("Error reading key", err)
+			return "", "", nil
+		}
+	}
+
+	return keyPath, keyName, key
 }
 
 func Smudge(cmd KeyCommand) {
@@ -85,12 +252,13 @@ func Smudge(cmd KeyCommand) {
 	headerBytes, err := ioutil.ReadAll(os.Stdin)
 
 	if err != nil {
-		log.Println("Error reading header", err)
+		log.Error("Error reading header", err)
 		return
 	}
 	header := (*HEADER)(unsafe.Pointer(&headerBytes[0]))
 	// Read encrypted data from stdin
 	if header.flag != [4]byte{0, 'M', 'R', 0} || header.version != 1 {
+		log.Warning("File is not encrypted")
 		os.Stdout.Write(headerBytes)
 		return
 	}
@@ -99,26 +267,26 @@ func Smudge(cmd KeyCommand) {
 	keyPath, keyName := GetKeyPath(cmd.KeyName)
 	key, err := os.ReadFile(keyPath + keyName)
 	if err != nil {
-		log.Println("Error reading key", err)
+		log.Warning("File is not encrypted")
 		os.Stdout.Write(headerBytes)
 		return
 	}
 
 	if header.khash != Hash(key) {
-		log.Println("Key mismatch")
+		log.Warning("gitenc key is not the same as the one used to encrypt the file.")
 		os.Stdout.Write(headerBytes)
 		return
 	}
 
 	plaintext, err := Decrypt(input, key)
 	if err != nil {
-		log.Println("Error decrypting", err)
+		log.Error("Error decrypting", err)
 		os.Stdout.Write(headerBytes)
 		return
 	}
 
 	if header.fhash != Hash(plaintext) {
-		log.Println("File hash mismatch")
+		log.Error("File hash mismatch")
 		os.Stdout.Write(headerBytes)
 		return
 	}
@@ -130,7 +298,7 @@ func Diff(cmd KeyCommand, file string) {
 	// Read header from file
 	headerBytes, err := ioutil.ReadFile(file)
 	if err != nil || len(headerBytes) < int(unsafe.Sizeof(HEADER{})) {
-		log.Println("Error reading file:", err)
+		//log.Error("Error reading file:", err)
 		return
 	}
 	header := (*HEADER)(unsafe.Pointer(&headerBytes[0]))
@@ -143,7 +311,7 @@ func Diff(cmd KeyCommand, file string) {
 	dataOffset := int64(unsafe.Sizeof(*header))
 	encryptedData, err := ioutil.ReadFile(file)
 	if err != nil {
-		log.Println("Error reading file:", err)
+		log.Error("Error reading file:", err)
 		return
 	}
 	encryptedData = encryptedData[dataOffset : dataOffset+int64(header.size)]
@@ -152,22 +320,22 @@ func Diff(cmd KeyCommand, file string) {
 	keyPath, keyName := GetKeyPath(cmd.KeyName)
 	key, err := os.ReadFile(keyPath + keyName)
 	if err != nil {
-		log.Println("Error reading key", err)
+		log.Error("Error reading key", err)
 		return
 	}
 
 	if header.khash != Hash(key) {
-		log.Println("Key mismatch")
+		log.Warning("gitenc key is not the same as the one used to encrypt the file.")
 		return
 	}
 
 	plaintext, err := Decrypt(encryptedData, key)
 	if err != nil {
-		log.Println("Error decrypting", err)
+		log.Error("Error decrypting", err)
 		return
 	}
 	if header.fhash != Hash(plaintext) {
-		log.Println("Hash mismatch")
+		log.Error("Hash mismatch")
 		return
 	}
 
@@ -180,12 +348,12 @@ func Clean(cmd KeyCommand) {
 	keyPath, keyName := GetKeyPath(cmd.KeyName)
 	key, err := os.ReadFile(keyPath + keyName)
 	if err != nil {
-		log.Println("Error reading key", err)
+		log.Error("Error reading key", err)
 		return
 	}
 	encrypted, err := Encrypt(bytes, key)
 	if err != nil {
-		log.Println("Error encrypting", err)
+		log.Error("Error encrypting", err)
 		return
 	}
 	header := HEADER{
@@ -200,4 +368,22 @@ func Clean(cmd KeyCommand) {
 	os.Stdout.Write((*(*[unsafe.Sizeof(header)]byte)(unsafe.Pointer(&header)))[:])
 	// Write encrypted data to stdout
 	os.Stdout.Write(encrypted)
+}
+
+func Set(cmd KeyCommand) {
+	keyPath, keyName := GetKeyPath(cmd.KeyName)
+	if cmd.Key != "" {
+		log.Info("Generating new key...")
+		key := GenerateKey(cmd.Key)
+		if err := os.MkdirAll(keyPath, 0700); err != nil {
+			log.Error("Error creating key directory", err)
+			return
+		}
+		if err := os.WriteFile(keyPath+keyName, key, 0600); err != nil {
+			log.Error("Error writing key", err)
+			return
+		}
+	}
+	log.Info("Setting key name to", keyName)
+	SetGitConfig(keyName)
 }

@@ -22,7 +22,7 @@ package main
 
 import (
 	"flag"
-	"log"
+	log "gitenc/log"
 	"os"
 )
 
@@ -31,37 +31,75 @@ type KeyCommand struct {
 	KeyName string
 }
 
-func init() {
-
+type DoctorCommand struct {
+	Fix bool
 }
+
+func init() {
+	log.InitLog()
+}
+
 func main() {
 	key := KeyCommand{}
 	KeyCmd := flag.NewFlagSet("init", flag.ExitOnError)
 	KeyCmd.StringVar(&key.Key, "key", "", "Key to use for encryption")
 	KeyCmd.StringVar(&key.KeyName, "keyname", "", "Name of the key to use for encryption")
 
+	doctor := DoctorCommand{}
+	DoctorCmd := flag.NewFlagSet("doctor", flag.ExitOnError)
+	DoctorCmd.BoolVar(&doctor.Fix, "fix", false, "Fix problems")
+
 	if len(os.Args) < 2 {
-		log.Println("Not enough arguments")
+		log.Error("Not enough arguments")
+		showHelp()
 		return
 	}
 
-	KeyCmd.Parse(os.Args[2:])
+	//log.Info(os.Args)
 
 	switch os.Args[1] {
 	case "init":
+		KeyCmd.Parse(os.Args[2:])
 		Init(key)
-	case "checkout":
-		Checkout()
+	case "set":
+		KeyCmd.Parse(os.Args[2:])
+		Set(key)
+	case "lock":
+		KeyCmd.Parse(os.Args[2:])
+		Lock(key)
+	case "unlock":
+		KeyCmd.Parse(os.Args[2:])
+		Unlock(key)
+	case "doctor":
+		DoctorCmd.Parse(os.Args[2:])
+		Doctor(doctor)
 	case "smudge":
+		KeyCmd.Parse(os.Args[2:])
 		Smudge(key)
 	case "clean":
+		KeyCmd.Parse(os.Args[2:])
 		Clean(key)
 	case "diff":
+		KeyCmd.Parse(os.Args[2:])
 		Diff(key, os.Args[len(os.Args)-1])
 	case "version":
-		log.Println("gitenc version 0.1")
+		log.Info("gitenc version 0.2")
+	case "help":
+		showHelp()
 	default:
-		log.Println("Unknown command")
+		log.Warning("Unknown command: " + os.Args[1] + ". Try 'gitenc help' for more information.")
 	}
 
+}
+
+func showHelp() {
+	log.Info("Usage: gitenc <command> [options]")
+	log.Info("Commands:")
+	log.Log("init - Initialize gitenc in the current repository")
+	log.Log("set - Set the key to use for encryption")
+	log.Log("lock - Lock the repository")
+	log.Log("unlock - Unlock the repository")
+	log.Log("doctor - Check the repository for problems")
+	log.Log("version - Print the version of gitenc")
+	log.Log("help - Print this help message")
 }

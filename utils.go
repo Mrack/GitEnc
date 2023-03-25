@@ -28,24 +28,26 @@ import (
 func RunCommand(cmd string, args ...string) (int, string) {
 	osCmd := exec.Command(cmd, args...)
 	output, err := osCmd.CombinedOutput()
-	res := strings.Trim(strings.Trim(string(output), "\r"), "\n")
 	if err != nil {
-		return 1, res
+		return 1, string(output)
 	}
-	return 0, res
+	return 0, string(output)
 }
 
 func GetKeyPath(name string) (string, string) {
 	if name == "" {
 		name = "default"
 	}
-	return GetGitPath(name) + "/gitenc/keys/", name
+	return GetGitPath() + "/gitenc/keys/", name
 }
 
-func GetGitPath(keyName string) string {
+func Trim(s string) string {
+	return strings.Trim(strings.Trim(s, "\r"), "\n")
+}
+func GetGitPath() string {
 	code, path := RunCommand("git", "rev-parse", "--git-dir")
 	if code != 0 {
 		return ""
 	}
-	return path
+	return Trim(path)
 }
