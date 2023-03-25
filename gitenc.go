@@ -83,7 +83,7 @@ func main() {
 		KeyCmd.Parse(os.Args[2:])
 		Diff(key, os.Args[len(os.Args)-1])
 	case "version":
-		log.Info("gitenc version 0.2")
+		log.Info("gitenc version 0.4")
 	case "help":
 		showHelp()
 	default:
